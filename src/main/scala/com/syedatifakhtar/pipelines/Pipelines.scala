@@ -14,15 +14,15 @@ object Pipelines {
 
   case class PipelineContext(previousOutput: StepOutput) extends Context
 
-  trait Step {
+  trait Step[P <: PipelineContext] {
     def name: String
-    def run(pc: PipelineContext): Try[StepOutput]
+    def run(pc: P): Try[StepOutput]
   }
 
 
   case class UnitStep(override val name: String)
     (val task: PipelineContext => StepOutput)
-    extends Step {
+    extends Step[PipelineContext] {
 
     override def run(pc: PipelineContext) = Try {
       task(pc)
@@ -31,7 +31,7 @@ object Pipelines {
 
   case class ParallelStep(name: String)
     (tasks: Seq[PipelineContext => StepOutput])
-    (implicit val ec: ExecutionContext) extends Step {
+    (implicit val ec: ExecutionContext) extends Step[PipelineContext] {
 
     import scala.concurrent.duration._
 
@@ -67,15 +67,16 @@ object Pipelines {
     def withOverrides(overrides: Map[String, String]): Pipeline
   }
 
-  case class SimplePipeline(name: String, pipelineContext: PipelineContext, steps: Seq[Step]) extends Pipeline {
+  case class SimplePipeline(name: String, pipelineContext: PipelineContext, steps: Seq[Step[PipelineContext]]) extends Pipeline {
 
-    def andThen(step: Step) = {
+    def andThen(step: Step[PipelineContext]): SimplePipeline = {
       SimplePipeline(name = name, pipelineContext, steps :+ step)
     }
 
-    def |(step: Step) = andThen(step)
+    def |(step: Step[PipelineContext]) = andThen(step)
+    def ->(step: Step[PipelineContext]) = andThen(step)
 
-    def execute(step: Seq[Step], pipelineContext: PipelineContext): PipelineContext = {
+    def execute(step: Seq[Step[PipelineContext]], pipelineContext: PipelineContext): PipelineContext = {
       if (step.isEmpty) pipelineContext
       else {
         val output = step.head.run(pipelineContext)
@@ -103,6 +104,7 @@ object Pipelines {
   class MultiSequencePipeline(override val name: String, override val pipelineContext: PipelineContext, pipelines: Seq[Pipeline]) extends Pipeline {
     def andThen(pipeline: Pipeline) = new MultiSequencePipeline(name, pipelineContext, pipelines :+ pipeline)
     def |(pipeline: Pipeline) = andThen(pipeline)
+    def ->(pipeline: Pipeline) = andThen(pipeline)
     override def execute: PipelineOutput = {
       def execute(pipelines: Seq[Pipeline], lastOutput: PipelineOutput): PipelineOutput = {
         if (pipelines.isEmpty) lastOutput
@@ -125,6 +127,7 @@ object Pipelines {
 
     def inParallel(pipeline: Pipeline) = new ForkPipeline(name, pipelineContext, forks :+ pipeline,timeout)(executionContext)
     def |(pipeline: Pipeline) = inParallel(pipeline)
+    def ->(pipeline: Pipeline) = inParallel(pipeline)
     override def execute: PipelineOutput = {
       println("Forks: " + forks.map(_.name).mkString(";"))
       val eventualOutputs = Future.sequence(forks.map { p =>
@@ -149,19 +152,18 @@ object Pipelines {
   }
 
   object Pipeline {
-    def empty(name: String) = SimplePipeline(name, PipelineContext(nop), Seq.empty[Step])
+    def empty(name: String) = SimplePipeline(name, PipelineContext(nop), Seq.empty[Step[PipelineContext]])
   }
 
   def main(args: Array[String]): Unit = {
     import scala.concurrent.ExecutionContext
     import ExecutionContext.Implicits.global
-    import scala.util.Try
-    val pipeline = Pipeline.empty("Hello World") |
-      UnitStep("storeValue") { pc => Map("a" -> "b") } |
-      UnitStep("printValue") { pc =>
-        println(pc.previousOutput("a"))
+    val pipeline = Pipeline.empty("Hello World") ->
+      UnitStep("storeValue") { pc => Map("a" -> "b") } ->
+      UnitStep("printValue")
+      { pc => println(pc.previousOutput("a"))
         pc.previousOutput
-      } |
+      } ->
       ParallelStep("Count numbers")(Seq(
         { pc =>
           println("1")
@@ -211,7 +213,11 @@ object Pipelines {
         nop
     })
 
-    val joinedPipeline = MultiSequencePipeline.empty("HelloGoodbyePipeline") | anotherPipeline | pipeline | forkedPipeline
+    val joinedPipeline =
+      MultiSequencePipeline.empty("HelloGoodbyePipeline") |
+        anotherPipeline |
+        pipeline |
+        forkedPipeline
 
     val someValue = joinedPipeline.execute
     println(someValue.get)
