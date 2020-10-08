@@ -1,6 +1,7 @@
 package com.syedatifakhtar.pipelines
 
 import scala.concurrent.duration.Duration
+import scala.language.postfixOps
 
 object Pipelines {
 
@@ -76,7 +77,7 @@ object Pipelines {
     def |(step: Step[PipelineContext]) = andThen(step)
     def ->(step: Step[PipelineContext]) = andThen(step)
 
-    def execute(step: Seq[Step[PipelineContext]], pipelineContext: PipelineContext): PipelineContext = {
+    protected def execute(step: Seq[Step[PipelineContext]], pipelineContext: PipelineContext): PipelineContext = {
       if (step.isEmpty) pipelineContext
       else {
         val output = step.head.run(pipelineContext)
@@ -158,7 +159,8 @@ object Pipelines {
   def main(args: Array[String]): Unit = {
     import scala.concurrent.ExecutionContext
     import ExecutionContext.Implicits.global
-    val pipeline = Pipeline.empty("Hello World") ->
+    val pipeline =
+      Pipeline.empty("Hello World") ->
       UnitStep("storeValue") { pc => Map("a" -> "b") } ->
       UnitStep("printValue")
       { pc => println(pc.previousOutput("a"))
@@ -195,7 +197,8 @@ object Pipelines {
       }
 
     import scala.concurrent.duration._
-    val forkedPipeline = ForkPipeline.empty("Forked Pipeline")(10 minutes) | (Pipeline.empty("Count numbers") |
+    val forkedPipeline = ForkPipeline.empty("Forked Pipeline")(10 minutes) |
+      (Pipeline.empty("Count numbers") |
       UnitStep("Count to 100") {
         pc =>
           (1 to 100).map { n =>
